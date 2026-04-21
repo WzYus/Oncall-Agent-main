@@ -1,0 +1,18 @@
+groups:
+  - name: aiops_alerts
+    interval: 30s
+    rules:
+      - alert: HighCPUUsage
+        expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m]))) * 100 > 1
+        for: 0s
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage test"
+      - alert: AlwaysFiring
+        expr: up == 1
+        for: 0s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Always firing test alert"

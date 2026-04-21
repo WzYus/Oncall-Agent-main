@@ -1,0 +1,11 @@
+groups:
+  - name: business_alerts
+    interval: 10s
+    rules:
+      - alert: PermanentTestAlert
+        expr: vector(1)
+        for: 0s
+        labels:
+          severity: critical
+          service: aiops
+        annotations:

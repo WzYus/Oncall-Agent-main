@@ -1,195 +1,173 @@
-# SuperBizAgent
+# OnCall-Agent
 
-> 基于 Spring Boot + AI Agent 的智能问答与运维系统
+> 基于 **Spring Boot（Java）+ LangGraph（Python）** 的智能告警分析与运维报告系统
 
 ## 📖 项目简介
 
-企业级智能业务代理系统，包含两大核心模块：
+本项目是一个面向生产环境的智能运维（AIOps）助手，采用 **Java 后端 + Python Agent** 的混合架构：
 
-### 1. RAG 智能问答
-集成 Milvus 向量数据库和阿里云 DashScope，提供基于检索增强生成的智能问答能力，支持多轮对话和流式输出。
-
-### 2. AIOps 智能运维
-基于 AI Agent 的自动化运维系统，采用 Planner-Executor-Replanner 架构，实现告警分析、日志查询、智能诊断和报告生成。
+- **Java 后端**：负责业务接口、工具实现（Prometheus 告警查询、CLS 日志检索、Milvus 文档向量检索），并提供 SSE 流式网关。
+- **Python Agent**：基于 LangGraph 实现 **Supervisor → Planner → Executor** 多智能体协作，自动分析 Prometheus 真实告警并生成结构化运维报告。
 
 ## 🚀 核心特性
 
-- ✅ **RAG 问答**: 向量检索 + 多轮对话 + 流式输出
-- ✅ **AIOps 运维**: 智能诊断 + 多 Agent 协作 + 自动报告
-- ✅ **工具集成**: 文档检索、告警查询、日志分析、时间工具
-- ✅ **会话管理**: 上下文维护、历史管理、自动清理
-- ✅ **Web 界面**: 提供测试界面和 RESTful API
-
+- ✅ **真实监控集成**：对接 Prometheus 实时告警，支持自定义业务告警规则。
+- ✅ **多 Agent 协作**：Planner 负责规划、Executor 负责工具执行、Supervisor 负责调度与僵局检测。
+- ✅ **自动化报告生成**：基于真实告警和日志数据，输出包含根因分析、处理建议的 Markdown 报告。
+- ✅ **流式响应**：通过 SSE 将分析进度实时推送至前端，提升交互体验。
+- ✅ **容器化部署**：提供完整的 `docker-compose.yml`，一键启动 Java、Python、Prometheus、Milvus 全家桶。
+- ✅ **工具生态**：内置时间查询、Prometheus 告警、CLS 日志检索、内部文档 RAG 等工具。
 
 ## 🛠️ 技术栈
 
-| 技术 | 版本 | 说明 |
-|------|------|------|
-| Java | 17 | 开发语言 |
-| Spring Boot | 3.2.0 | 应用框架 |
-| Spring AI | - | AI Agent 框架 |
-| DashScope | 2.17.0 | 阿里云 AI 服务 |
-| Milvus | 2.6.10 | 向量数据库 |
+| 模块               | 技术                                     |
+| ------------------ | ---------------------------------------- |
+| **Java 后端**      | Spring Boot 3.2、Spring AI Alibaba、OkHttp |
+| **Python Agent**   | FastAPI、LangGraph、LangChain、Ollama（可选） |
+| **向量数据库**     | Milvus                                   |
+| **监控**           | Prometheus（含自定义告警规则）             |
+| **日志服务**       | 腾讯云 CLS（支持 Mock 与真实模式切换）     |
+| **大模型**         | 阿里云 DashScope（或本地 Ollama）          |
+| **容器编排**       | Docker Compose                           |
 
-## 📦 核心模块
-
-```
-SuperBizAgent/
+## 📦 项目结构
+```text
+OnCall-Agent-main/
 ├── src/main/java/org/example/
 │   ├── controller/
-│   │   └── ChatController.java        # 统一接口控制器 ⭐
-│   ├── service/
-│   │   ├── ChatService.java           # 对话服务 ⭐
-│   │   ├── AiOpsService.java          # AIOps 服务 ⭐
-│   │   ├── RagService.java            # RAG 服务
-│   │   └── Vector*.java               # 向量服务
-│   ├── agent/tool/                    # Agent 工具集
-│   │   ├── DateTimeTools.java         # 时间工具
-│   │   ├── InternalDocsTools.java     # 文档检索
-│   │   ├── QueryMetricsTools.java     # 告警查询
-│   │   └── QueryLogsTools.java        # 日志查询
-│   └── config/                        # 配置类
+│   │   ├── ChatController.java        # 对话与 AIOps 入口、SSE 网关
+│   │   └── AgentToolController.java   # 工具接口（供 Python Agent 调用）
+│   ├── service/                       # 业务服务（RAG、向量检索、对话）
+│   ├── agent/tool/
+│   │   ├── DateTimeTools.java
+│   │   ├── InternalDocsTools.java
+│   │   ├── QueryMetricsTools.java      # Prometheus 告警查询
+│   │   └── QueryLogsTools.java         # CLS 日志查询
+│   └── config/                         # 配置类
 ├── src/main/resources/
-│   ├── static/                        # Web 界面
-│   └── application.yml                # 应用配置
-└── aiops-docs/                        # 运维文档库
+│   ├── static/                         # 前端测试界面
+│   └── application.yml                 # 主配置文件
+├── docker-compose.yml                  # 容器编排配置
+├── prometheus.yml                      # Prometheus 抓取配置
+├── business_alerts.yml                 # 业务告警规则
+├── Dockerfile                          # Java 应用镜像构建
+└── aiops-python-agent/                 # Python Agent（Git 子模块）
 ```
 
+### Python Agent (aiops-python-agent/)
+```text
+aiops-python-agent/
+├── agent/
+│   ├── supervisor.py    # LangGraph 工作流定义
+│   ├── prompts.py       # 提示词模板
+│   └── tools.py         # Python 工具（回调 Java API）
+├── main.py              # FastAPI 入口
+├── requirements.txt
+└── Dockerfile           # Python 应用镜像构建
+```
 
 ## 📡 核心接口
 
-### 1. 智能问答接口
+| 接口                            | 方法 | 说明                                                         |
+| ------------------------------- | ---- | ------------------------------------------------------------ |
+| `/api/chat`                     | POST | 普通对话（支持工具调用），返回完整结果                        |
+| `/api/chat_stream`              | POST | 流式对话，SSE 输出，支持多轮对话与工具调用                    |
+| `/api/ai_ops`                   | POST | **智能运维分析**，SSE 流式返回《告警分析报告》                |
+| `/api/chat/clear`               | POST | 清空会话历史                                                 |
+| `/api/upload`                   | POST | 上传文档并向量化（用于 RAG 知识库）                          |
+| `/actuator/prometheus`          | GET  | 暴露应用指标，供 Prometheus 抓取                             |
+| `/api/tools/*`                  | POST | **内部工具接口**，供 Python Agent 调用（不直接对外暴露）       |
 
-**流式对话（推荐）**
-```bash
-POST /api/chat_stream
-Content-Type: application/json
+## ⚙️ 核心配置说明
 
-{
-  "Id": "session-123",
-  "Question": "什么是向量数据库？"
-}
-```
-支持 SSE 流式输出、自动工具调用、多轮对话。
-
-**普通对话**
-```bash
-POST /api/chat
-Content-Type: application/json
-
-{
-  "Id": "session-123",
-  "Question": "什么是向量数据库？"
-}
-```
-一次性返回完整结果，支持工具调用和多轮对话。
-
-### 2. AIOps 智能运维接口
-
-```bash
-POST /api/ai_ops
-```
-自动执行告警分析流程，生成运维报告（SSE 流式输出）。
-
-### 3. 会话管理
-
-- `POST /api/chat/clear` - 清空会话历史
-- `GET /api/chat/session/{sessionId}` - 获取会话信息
-
-### 4. 文件管理
-
-- `POST /api/upload` - 上传文件并自动向量化
-- `GET /milvus/health` - Milvus 健康检查
-
-
-## ⚙️ 核心配置
-
-### application.yml
+### 1. 容器化部署下的关键配置（`application.yml`）
 
 ```yaml
-server:
-  port: 9900
-
-# Milvus 向量数据库
 milvus:
-  host: localhost
+  host: standalone            # 容器内服务名
   port: 19530
 
-# 阿里云 DashScope
-spring:
-  ai:
-    dashscope:
-      api-key: "${DASHSCOPE_API_KEY}" // 环境变量
+prometheus:
+  base-url: http://prometheus:9090   # 容器内服务名
+  mock-enabled: false               # 真实模式
 
-# RAG 配置
-rag:
-  top-k: 3
-  model: "qwen3-max"
+agent:
+  python:
+    url: http://python-agent:5000   # 容器内服务名
 
-# 文档分片
-document:
-  chunk:
-    max-size: 800
-    overlap: 100
-```
+cls:
+  mock-enabled: true                # 可切换真实 CLS
+2. 环境变量
+变量名	说明
+DASHSCOPE_API_KEY	阿里云 DashScope API Key（必填）
+TENCENT_CLS_SECRET_ID	腾讯云 CLS SecretId（真实日志模式时需要）
+TENCENT_CLS_SECRET_KEY	腾讯云 CLS SecretKey
+TENCENT_CLS_TOPIC_ID	腾讯云 CLS 日志主题 ID
+JAVA_BACKEND_URL	Python Agent 访问 Java 后端的地址（容器内自动注入）
+可通过项目根目录下的 .env 文件统一管理上述变量。
 
-### 环境变量
+🚀 快速开始（全容器化部署）
+1. 克隆仓库并初始化子模块
+bash
+git clone https://github.com/WzYus/Oncall-Agent-main.git
+cd Oncall-Agent-main
+git submodule update --init --recursive
+2. 设置环境变量
+在项目根目录创建 .env 文件，填入必要信息：
 
-```bash
-export DASHSCOPE_API_KEY=your-api-key
-```
+text
+DASHSCOPE_API_KEY=sk-xxxx
+TENCENT_CLS_SECRET_ID=xxxx
+TENCENT_CLS_SECRET_KEY=xxxx
+TENCENT_CLS_TOPIC_ID=xxxx
+3. 一键启动所有服务
+bash
+docker-compose up -d --build
+启动后将包含以下容器：
 
+oncall-java：Java 后端（端口 9900）
 
-## 🚀 快速开始
+aiops-python：Python Agent（端口 5000）
 
-### 1. 环境准备
+prometheus：监控与告警（端口 9090）
 
-```bash
-# 设置 API Key
-export DASHSCOPE_API_KEY=your-api-key
-```
+milvus-standalone、milvus-etcd、milvus-minio：向量数据库全家桶
 
-### 2. 启动应用
+milvus-attu：Milvus 可视化管理界面（端口 8000）
 
-方法一： 手动启动
-```bash
-1.先启动向量数据库
-docker compose up -d -f vector-database.yml
+4. 访问服务
+前端测试界面：http://localhost:9900
 
-2.启动服务
-mvn clean install
-mvn spring-boot:run
-```
+Prometheus UI：http://localhost:9090
 
-方法二：一键启动
-```bash
-make init  # 会自动启动向量数据库并上传运维文档到向量库
-```
+Milvus Attu：http://localhost:8000
 
+点击前端界面中的“AI Ops 分析”按钮，即可触发多 Agent 协作流程，生成流式报告。
 
-### 3. 使用示例
+5. 本地开发模式（非容器化）
+若需要在 IDE 中分别运行 Java 和 Python：
 
-**Web 界面**
-```
-http://localhost:9900
-```
+启动 Docker 基础服务（Milvus、Prometheus）：
 
-**命令行**
-```bash
-# 上传文档
-curl -X POST http://localhost:9900/api/upload \
-  -F "file=@document.txt"
+bash
+docker-compose up -d etcd minio standalone attu prometheus
+在 IDE 中启动 Java 应用（org.example.Main），确保 application.yml 中地址指向 localhost（如 milvus.host=localhost、prometheus.base-url=http://localhost:9090）。
 
-# 智能问答
-curl -X POST http://localhost:9900/api/chat \
-  -H "Content-Type: application/json" \
-  -d '{"Id":"test","Question":"什么是向量数据库？"}'
+在 PyCharm 中运行 Python Agent 的 main.py，并修改 tools.py 中的 JAVA_BACKEND_URL 为 http://localhost:9900。
 
-# 健康检查
-curl http://localhost:9900/milvus/health
-```
+📊 AIOps 工作流示意
+text
+用户请求 → Java (ChatController) 转发 → Python Agent (FastAPI)
+         ↓
+Supervisor 调度 → Planner 输出 JSON 决策 (EXECUTE)
+         ↓
+Executor 强制调用工具 (query_prometheus_alerts) → Java 工具接口
+         ↓
+获取真实 Prometheus 告警 → Planner 基于证据输出 FINISH
+         ↓
+生成 Markdown 报告 → Java 网关 → 前端 SSE 流式展示
+📄 License
+MIT License
 
-
-**版本**: v1.0.0  
-**作者**: chief  
-**许可证**: MIT
+版本: v2.0.0（混合架构）
+作者: WzYus
