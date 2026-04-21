@@ -1,0 +1,3 @@
+[submodule "aiops-python-agent"]
+	path = aiops-python-agent
+	url = git@github.com:WzYus/aiops-python-agent.git
