@@ -12,63 +12,43 @@ file:
     allowed-extensions: txt,md
 
 milvus:
-  host: localhost           # 容器化后使用服务名
+  host: localhost
   port: 19530
   username: ""
   password: ""
   database: default
   timeout: 10000
 
-# Spring AI Alibaba DashScope 配置
 spring:
+  autoconfigure:
+    exclude:
+      - com.alibaba.cloud.ai.autoconfigure.dashscope.DashScopeEmbeddingAutoConfiguration
   ai:
     dashscope:
-      api-key: ${DASHSCOPE_API_KEY:}
+      api-key: local-dummy-key
+    ollama:
+      base-url: http://localhost:11434
       chat:
-        options:
-          model: qwen-turbo
-          timeout: 180000
-      retry:
-        max-attempts: 3
-        backoff:
-          initial-interval: 2000
-          multiplier: 2
-          max-interval: 10000
-    mcp:
-      client:
+        model: qwen2.5-coder:7b
+      embedding:
+        model: bge-m3
         enabled: true
-        name: tencent-mcp-server
-        version: 1.0.0
-        request-timeout: 60s
-        type: ASYNC
-        stdio:
-          command: "npx"
-          args: [ "-y", "cls-mcp-server@latest" ]
-          env:
-            TRANSPORT: "stdio"
-            TENCENTCLOUD_SECRET_ID: ${TENCENT_CLS_SECRET_ID:}
-            TENCENTCLOUD_SECRET_KEY: ${TENCENT_CLS_SECRET_KEY:}
-            TENCENTCLOUD_API_BASE_HOST: "tencentcloudapi.com"
-            TENCENTCLOUD_REGION: "ap-chengdu"
-            MAX_LENGTH: "15000"
 
 dashscope:
   api:
     key: ${DASHSCOPE_API_KEY:}
-  embedding:
-    model: text-embedding-v4
 
 document:
   chunk:
-    max-size: 800
-    overlap: 100
+    max-size: 50
+    overlap: 20
 
 rag:
   top-k: 3
-  model: "qwen3-max"
+  model: "qwen2.5-coder:7b"
 
 prometheus:
-  base-url: http://host.docker.internal:9090    # 容器内使用服务名
+  base-url: http://host.docker.internal:9090
   timeout: 10
   mock-enabled: false
 
@@ -83,7 +63,7 @@ management:
       application: ${spring.application.name:oncall-agent}
 
 cls:
-  mock-enabled: true                  # 暂时保持 Mock，后续改为 false 并配置真实凭证
+  mock-enabled: true
   secret-id: ${TENCENT_CLS_SECRET_ID:}
   secret-key: ${TENCENT_CLS_SECRET_KEY:}
   region: ap-guangzhou
@@ -91,4 +71,4 @@ cls:
 
 agent:
   python:
-    url: http://localhost:5000     # 容器内使用服务名
+    url: http://localhost:5000

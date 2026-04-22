@@ -1,20 +1,14 @@
 package org.example.controller;
 
-import com.alibaba.cloud.ai.dashscope.api.DashScopeApi;
-import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatModel;
-import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatOptions;
-import com.alibaba.cloud.ai.graph.NodeOutput;
-import com.alibaba.cloud.ai.graph.OverAllState;
-import com.alibaba.cloud.ai.graph.agent.ReactAgent;
-import com.alibaba.cloud.ai.graph.streaming.OutputType;
-import com.alibaba.cloud.ai.graph.streaming.StreamingOutput;
+import com.fasterxml.jackson.annotation.JsonAlias;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.Getter;
 import lombok.Setter;
 import org.example.service.ChatService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.ParameterizedTypeReference;
@@ -36,28 +30,25 @@ import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * 统一 API 控制器
- * 适配前端接口需求
+ * 适配前端接口需求（已完全本地化，无 Spring AI 依赖）
  */
 @RestController
 @RequestMapping("/api")
 public class ChatController {
 
     private static final Logger logger = LoggerFactory.getLogger(ChatController.class);
-    
+
     @Autowired
     private ChatService chatService;
 
     @Value("${agent.python.url:http://localhost:5000}")
     private String pythonAgentUrl;
 
-    @Autowired
-    private ToolCallbackProvider tools;
-
     private final ExecutorService executor = Executors.newCachedThreadPool();
 
     // 存储会话信息
     private final Map<String, SessionInfo> sessions = new ConcurrentHashMap<>();
-    
+
     // 最大历史消息窗口大小（成对计算：用户消息+AI回复=1对）
     private static final int MAX_WINDOW_SIZE = 6;
 
@@ -67,51 +58,33 @@ public class ChatController {
     }
 
     /**
-     * 普通对话接口（支持工具调用）
-     * 与 /chat_react 逻辑一致，但直接返回完整结果而非流式输出
+     * 普通对话接口 - 使用本地模型（纯文本，无工具调用）
      */
     @PostMapping("/chat")
     public ResponseEntity<ApiResponse<ChatResponse>> chat(@RequestBody ChatRequest request) {
         try {
-            logger.info("收到对话请求 - SessionId: {}, Question: {}", request.getId(), request.getQuestion());
+            logger.info("转发对话请求至 Python Agent - SessionId: {}, Question: {}", request.getId(), request.getQuestion());
 
-            // 参数校验
-            if (request.getQuestion() == null || request.getQuestion().trim().isEmpty()) {
-                logger.warn("问题内容为空");
-                return ResponseEntity.ok(ApiResponse.success(ChatResponse.error("问题内容不能为空")));
-            }
-
-            // 获取或创建会话
             SessionInfo session = getOrCreateSession(request.getId());
-            
-            // 获取历史消息
             List<Map<String, String>> history = session.getHistory();
-            logger.info("会话历史消息对数: {}", history.size() / 2);
 
-            // 创建 DashScope API 和 ChatModel
-            DashScopeApi dashScopeApi = chatService.createDashScopeApi();
-            DashScopeChatModel chatModel = chatService.createStandardChatModel(dashScopeApi);
+            // 构建转发请求体
+            Map<String, Object> pythonRequest = new HashMap<>();
+            pythonRequest.put("question", request.getQuestion());
+            pythonRequest.put("history", history);
 
-            // 记录可用工具
-            chatService.logAvailableTools();
+            // 调用 Python /chat 接口
+            RestTemplate restTemplate = new RestTemplate();
+            String pythonUrl = pythonAgentUrl + "/chat";
+            ResponseEntity<Map> response = restTemplate.postForEntity(pythonUrl, pythonRequest, Map.class);
 
-            logger.info("开始 ReactAgent 对话（支持自动工具调用）");
-            
-            // 构建系统提示词（包含历史消息）
-            String systemPrompt = chatService.buildSystemPrompt(history);
-            
-            // 创建 ReactAgent
-            ReactAgent agent = chatService.createReactAgent(chatModel, systemPrompt);
-            
-            // 执行对话
-            String fullAnswer = chatService.executeChat(agent, request.getQuestion());
-            
-            // 更新会话历史
-            session.addMessage(request.getQuestion(), fullAnswer);
-            logger.info("已更新会话历史 - SessionId: {}, 当前消息对数: {}", 
-                request.getId(), session.getMessagePairCount());
-            
-            return ResponseEntity.ok(ApiResponse.success(ChatResponse.success(fullAnswer)));
+            String answer = (String) response.getBody().get("answer");
+
+            session.addMessage(request.getQuestion(), answer);
+            logger.info("已更新会话历史 - SessionId: {}, 当前消息对数: {}",
+                    request.getId(), session.getMessagePairCount());
+
+            return ResponseEntity.ok(ApiResponse.success(ChatResponse.success(answer)));
 
         } catch (Exception e) {
             logger.error("对话失败", e);
@@ -146,154 +119,58 @@ public class ChatController {
     }
 
     /**
-     * ReactAgent 对话接口（SSE 流式模式，支持多轮对话，支持自动工具调用，例如获取当前时间，查询日志，告警等）
-     * 支持 session 管理，保留对话历史
+     * 流式对话接口（SSE）- 使用本地模型（模拟流式输出）
      */
     @PostMapping(value = "/chat_stream", produces = "text/event-stream;charset=UTF-8")
-    public SseEmitter chatStream(@RequestBody ChatRequest request) {
-        SseEmitter emitter = new SseEmitter(300000L); // 5分钟超时
+    public Flux<ServerSentEvent<String>> chatStream(@RequestBody ChatRequest request) {
+        SessionInfo session = getOrCreateSession(request.getId());
+        List<Map<String, String>> history = session.getHistory();
 
-        // 参数校验
-        if (request.getQuestion() == null || request.getQuestion().trim().isEmpty()) {
-            logger.warn("问题内容为空");
-            try {
-                emitter.send(SseEmitter.event().name("message").data(SseMessage.error("问题内容不能为空"), MediaType.APPLICATION_JSON));
-                emitter.complete();
-            } catch (IOException e) {
-                emitter.completeWithError(e);
-            }
-            return emitter;
-        }
+        Map<String, Object> pythonRequest = new HashMap<>();
+        pythonRequest.put("question", request.getQuestion());
+        pythonRequest.put("history", history);
 
-        executor.execute(() -> {
-            try {
-                logger.info("收到 ReactAgent 对话请求 - SessionId: {}, Question: {}", request.getId(), request.getQuestion());
+        WebClient webClient = WebClient.builder().baseUrl(pythonAgentUrl).build();
+        StringBuilder fullAnswerBuilder = new StringBuilder();
 
-                // 获取或创建会话
-                SessionInfo session = getOrCreateSession(request.getId());
-                
-                // 获取历史消息
-                List<Map<String, String>> history = session.getHistory();
-                logger.info("ReactAgent 会话历史消息对数: {}", history.size() / 2);
-
-                // 创建 DashScope API 和 ChatModel
-                DashScopeApi dashScopeApi = chatService.createDashScopeApi();
-                DashScopeChatModel chatModel = chatService.createStandardChatModel(dashScopeApi);
-
-                // 记录可用工具
-                chatService.logAvailableTools();
-
-                logger.info("开始 ReactAgent 流式对话（支持自动工具调用）");
-                
-                // 构建系统提示词（包含历史消息）
-                String systemPrompt = chatService.buildSystemPrompt(history);
-                
-                // 创建 ReactAgent
-                ReactAgent agent = chatService.createReactAgent(chatModel, systemPrompt);
-                
-                // 用于累积完整答案
-                StringBuilder fullAnswerBuilder = new StringBuilder();
-                
-                // 使用 agent.stream() 进行流式对话
-                Flux<NodeOutput> stream = agent.stream(request.getQuestion());
-                
-                stream.subscribe(
-                    output -> {
+        return webClient.post()
+                .uri("/chat_stream")
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(pythonRequest)
+                .accept(MediaType.TEXT_EVENT_STREAM)
+                .retrieve()
+                .bodyToFlux(new ParameterizedTypeReference<ServerSentEvent<String>>() {})
+                .doOnNext(event -> {
+                    // 累积答案（简单拼接 content 类型的数据）
+                    if (event.data() != null) {
                         try {
-                            // 检查是否为 StreamingOutput 类型
-                            if (output instanceof StreamingOutput streamingOutput) {
-                                OutputType type = streamingOutput.getOutputType();
-                                
-                                // 处理模型推理的流式输出
-                                if (type == OutputType.AGENT_MODEL_STREAMING) {
-                                    // 流式增量内容，逐步显示
-                                    String chunk = streamingOutput.message().getText();
-                                    if (chunk != null && !chunk.isEmpty()) {
-                                        fullAnswerBuilder.append(chunk);
-                                        
-                                        // 实时发送到前端
-                                        emitter.send(SseEmitter.event()
-                                                .name("message")
-                                                .data(SseMessage.content(chunk), MediaType.APPLICATION_JSON));
-                                        
-                                        logger.info("发送流式内容: {}", chunk);
-                                    }
-                                } else if (type == OutputType.AGENT_MODEL_FINISHED) {
-                                    // 模型推理完成
-                                    logger.info("模型输出完成");
-                                } else if (type == OutputType.AGENT_TOOL_FINISHED) {
-                                    // 工具调用完成
-                                    logger.info("工具调用完成: {}", output.node());
-                                } else if (type == OutputType.AGENT_HOOK_FINISHED) {
-                                    // Hook 执行完成
-                                    logger.debug("Hook 执行完成: {}", output.node());
-                                }
+                            JsonNode node = new ObjectMapper().readTree(event.data());
+                            if ("content".equals(node.path("type").asText())) {
+                                fullAnswerBuilder.append(node.path("data").asText());
                             }
-                        } catch (IOException e) {
-                            logger.error("发送流式消息失败", e);
-                            throw new RuntimeException(e);
-                        }
-                    },
-                    error -> {
-                        // 错误处理
-                        logger.error("ReactAgent 流式对话失败", error);
-                        try {
-                            emitter.send(SseEmitter.event()
-                                    .name("message")
-                                    .data(SseMessage.error(error.getMessage()), MediaType.APPLICATION_JSON));
-                        } catch (IOException ex) {
-                            logger.error("发送错误消息失败", ex);
-                        }
-                        emitter.completeWithError(error);
-                    },
-                    () -> {
-                        // 完成处理
-                        try {
-                            String fullAnswer = fullAnswerBuilder.toString();
-                            logger.info("ReactAgent 流式对话完成 - SessionId: {}, 答案长度: {}", 
-                                request.getId(), fullAnswer.length());
-                            
-                            // 更新会话历史
-                            session.addMessage(request.getQuestion(), fullAnswer);
-                            logger.info("已更新会话历史 - SessionId: {}, 当前消息对数: {}", 
-                                request.getId(), session.getMessagePairCount());
-                            
-                            // 发送完成标记
-                            emitter.send(SseEmitter.event()
-                                    .name("message")
-                                    .data(SseMessage.done(), MediaType.APPLICATION_JSON));
-                            emitter.complete();
-                        } catch (IOException e) {
-                            logger.error("发送完成消息失败", e);
-                            emitter.completeWithError(e);
-                        }
+                        } catch (Exception ignored) {}
                     }
-                );
-
-            } catch (Exception e) {
-                logger.error("ReactAgent 对话初始化失败", e);
-                try {
-                    emitter.send(SseEmitter.event()
-                            .name("message")
-                            .data(SseMessage.error(e.getMessage()), MediaType.APPLICATION_JSON));
-                } catch (IOException ex) {
-                    logger.error("发送错误消息失败", ex);
-                }
-                emitter.completeWithError(e);
-            }
-        });
-
-        return emitter;
+                })
+                .doOnComplete(() -> {
+                    session.addMessage(request.getQuestion(), fullAnswerBuilder.toString());
+                    logger.info("流式对话完成 - SessionId: {}, 答案长度: {}",
+                            request.getId(), fullAnswerBuilder.length());
+                })
+                .onErrorResume(e -> {
+                    logger.error("转发 Python 流式对话失败", e);
+                    return Flux.just(ServerSentEvent.<String>builder()
+                            .data("{\"type\":\"error\",\"data\":\"对话服务暂时不可用\"}")
+                            .build());
+                });
     }
 
     /**
      * AI 智能运维接口（SSE 流式模式）- 转发至 Python Agent 服务
-     * 前端直接消费此 SSE 流，Java 作为透明网关
      */
     @PostMapping(value = "/ai_ops", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<String>> aiOps() {
         WebClient webClient = WebClient.builder()
-                .baseUrl(pythonAgentUrl)   // 使用配置的地址
+                .baseUrl(pythonAgentUrl)
                 .build();
 
         return webClient.post()
@@ -309,7 +186,6 @@ public class ChatController {
                             .build());
                 });
     }
-
 
     /**
      * 获取会话信息
@@ -347,13 +223,8 @@ public class ChatController {
 
     // ==================== 内部类 ====================
 
-    /**
-     * 会话信息
-     * 管理单个会话的历史消息，支持自动清理和线程安全
-     */
     private static class SessionInfo {
         private final String sessionId;
-        // 存储历史消息对：[{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
         private final List<Map<String, String>> messageHistory;
         private final long createTime;
         private final ReentrantLock lock;
@@ -365,48 +236,31 @@ public class ChatController {
             this.lock = new ReentrantLock();
         }
 
-        /**
-         * 添加一对消息（用户问题 + AI回复）
-         * 自动管理历史消息窗口大小
-         */
         public void addMessage(String userQuestion, String aiAnswer) {
             lock.lock();
             try {
-                // 添加用户消息
                 Map<String, String> userMsg = new HashMap<>();
                 userMsg.put("role", "user");
                 userMsg.put("content", userQuestion);
                 messageHistory.add(userMsg);
 
-                // 添加AI回复
                 Map<String, String> assistantMsg = new HashMap<>();
                 assistantMsg.put("role", "assistant");
                 assistantMsg.put("content", aiAnswer);
                 messageHistory.add(assistantMsg);
 
-                // 自动清理：保持最多 MAX_WINDOW_SIZE 对消息
-                // 每对消息包含2条记录（user + assistant）
                 int maxMessages = MAX_WINDOW_SIZE * 2;
                 while (messageHistory.size() > maxMessages) {
-                    // 成对删除最旧的消息（删除前2条）
-                    messageHistory.remove(0); // 删除最旧的用户消息
+                    messageHistory.remove(0);
                     if (!messageHistory.isEmpty()) {
-                        messageHistory.remove(0); // 删除对应的AI回复
+                        messageHistory.remove(0);
                     }
                 }
-
-                logger.debug("会话 {} 更新历史消息，当前消息对数: {}", 
-                    sessionId, messageHistory.size() / 2);
-
             } finally {
                 lock.unlock();
             }
         }
 
-        /**
-         * 获取历史消息（线程安全）
-         * 返回副本以避免并发修改
-         */
         public List<Map<String, String>> getHistory() {
             lock.lock();
             try {
@@ -416,9 +270,6 @@ public class ChatController {
             }
         }
 
-        /**
-         * 清空历史消息
-         */
         public void clearHistory() {
             lock.lock();
             try {
@@ -429,9 +280,6 @@ public class ChatController {
             }
         }
 
-        /**
-         * 获取当前消息对数
-         */
         public int getMessagePairCount() {
             lock.lock();
             try {
@@ -442,38 +290,26 @@ public class ChatController {
         }
     }
 
-    /**
-     * 聊天请求
-     */
     @Setter
     @Getter
     public static class ChatRequest {
-        @com.fasterxml.jackson.annotation.JsonProperty(value = "Id")
-        @com.fasterxml.jackson.annotation.JsonAlias({"id", "ID"})
+        @JsonProperty(value = "Id")
+        @JsonAlias({"id", "ID"})
         private String Id;
-        
-        @com.fasterxml.jackson.annotation.JsonProperty(value = "Question")
-        @com.fasterxml.jackson.annotation.JsonAlias({"question", "QUESTION"})
-        private String Question;
 
+        @JsonProperty(value = "Question")
+        @JsonAlias({"question", "QUESTION"})
+        private String Question;
     }
 
-    /**
-     * 清空会话请求
-     */
     @Setter
     @Getter
     public static class ClearRequest {
-        @com.fasterxml.jackson.annotation.JsonProperty(value = "Id")
-        @com.fasterxml.jackson.annotation.JsonAlias({"id", "ID"})
+        @JsonProperty(value = "Id")
+        @JsonAlias({"id", "ID"})
         private String Id;
     }
 
-    // ==================== 内部类 ====================
-
-    /**
-     * 会话信息响应
-     */
     @Setter
     @Getter
     public static class SessionInfoResponse {
@@ -482,10 +318,6 @@ public class ChatController {
         private long createTime;
     }
 
-    /**
-     * 统一聊天响应格式
-     * 适用于所有普通返回模式的对话接口
-     */
     @Setter
     @Getter
     public static class ChatResponse {
@@ -508,14 +340,10 @@ public class ChatController {
         }
     }
 
-    /**
-     * 统一 SSE 流式消息格式
-     * 适用于所有 SSE 流式返回模式的对话接口
-     */
     @Setter
     @Getter
     public static class SseMessage {
-        private String type;  // content: 内容块, error: 错误, done: 完成
+        private String type;
         private String data;
 
         public static SseMessage content(String data) {
@@ -540,7 +368,6 @@ public class ChatController {
         }
     }
 
-
     @Getter
     @Setter
     public static class ApiResponse<T> {
@@ -562,6 +389,5 @@ public class ChatController {
             response.setMessage(message);
             return response;
         }
-
     }
 }
