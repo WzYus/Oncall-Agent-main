@@ -105,64 +105,49 @@ public class DocumentChunkService {
         List<DocumentChunk> chunks = new ArrayList<>();
         String content = section.content;
         String title = section.title;
+        int maxSize = chunkConfig.getMaxSize();
+        int overlap = chunkConfig.getOverlap();
 
-        // 如果章节内容小于最大尺寸，直接作为一个分片
-        if (content.length() <= chunkConfig.getMaxSize()) {
-            DocumentChunk chunk = new DocumentChunk(
-                content, 
-                section.startIndex, 
-                section.startIndex + content.length(), 
-                startChunkIndex
-            );
+        if (content == null || content.isEmpty()) {
+            return chunks;
+        }
+
+        int totalLength = content.length();
+        if (totalLength <= maxSize) {
+            DocumentChunk chunk = new DocumentChunk(content, section.startIndex, section.startIndex + totalLength, startChunkIndex);
             chunk.setTitle(title);
             chunks.add(chunk);
             return chunks;
         }
 
-        // 章节内容较长，需要进一步分片
-        // 优先在段落边界分割
-        List<String> paragraphs = splitByParagraphs(content);
-        
-        StringBuilder currentChunk = new StringBuilder();
-        int currentStartIndex = section.startIndex;
+        int start = 0;
         int chunkIndex = startChunkIndex;
 
-        for (String paragraph : paragraphs) {
-            // 如果当前分片加上新段落超过最大尺寸
-            if (currentChunk.length() > 0 && 
-                currentChunk.length() + paragraph.length() > chunkConfig.getMaxSize()) {
-                
-                // 保存当前分片
-                String chunkContent = currentChunk.toString().trim();
-                DocumentChunk chunk = new DocumentChunk(
-                    chunkContent,
-                    currentStartIndex,
-                    currentStartIndex + chunkContent.length(),
-                    chunkIndex++
-                );
-                chunk.setTitle(title);
-                chunks.add(chunk);
+        while (start < totalLength) {
+            int end = Math.min(start + maxSize, totalLength);
+            String chunkText = content.substring(start, end);
 
-                // 开始新分片，包含重叠部分
-                String overlap = getOverlapText(chunkContent);
-                currentChunk = new StringBuilder(overlap);
-                currentStartIndex = currentStartIndex + chunkContent.length() - overlap.length();
-            }
-
-            currentChunk.append(paragraph).append("\n\n");
-        }
-
-        // 保存最后一个分片
-        if (currentChunk.length() > 0) {
-            String chunkContent = currentChunk.toString().trim();
             DocumentChunk chunk = new DocumentChunk(
-                chunkContent,
-                currentStartIndex,
-                currentStartIndex + chunkContent.length(),
-                chunkIndex
+                    chunkText,
+                    section.startIndex + start,
+                    section.startIndex + end,
+                    chunkIndex++
             );
             chunk.setTitle(title);
             chunks.add(chunk);
+
+            // 下一次切分的起始位置，确保至少前进一个字符
+            int nextStart = end - overlap;
+            if (nextStart <= start || nextStart >= totalLength) {
+                // 如果重叠导致起始位置没变或越界，则强制从 end 开始
+                nextStart = end;
+            }
+            start = nextStart;
+
+            // 安全退出：如果 start 已经到达末尾
+            if (start >= totalLength) {
+                break;
+            }
         }
 
         return chunks;

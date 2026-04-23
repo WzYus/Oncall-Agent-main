@@ -54,7 +54,7 @@ public class AgentToolController {
         if (queryLogsTools == null) {
             return "{\"success\":false,\"message\":\"Log tools not available\"}";
         }
-        String region = (String) request.getOrDefault("region", "ap-guangzhou");
+        String region = (String) request.get("region");
         String logTopic = (String) request.get("logTopic");
         String query = (String) request.get("query");
         Integer limit = request.containsKey("limit") ? (Integer) request.get("limit") : null;

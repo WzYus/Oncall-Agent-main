@@ -29,7 +29,7 @@ spring:
     ollama:
       base-url: http://localhost:11434
       chat:
-        model: qwen2.5-coder:7b
+        model: qwen3.5:9b
       embedding:
         model: bge-m3
         enabled: true
@@ -40,12 +40,12 @@ dashscope:
 
 document:
   chunk:
-    max-size: 50
-    overlap: 20
+    max-size: 800
+    overlap: 100
 
 rag:
   top-k: 3
-  model: "qwen2.5-coder:7b"
+  model: "qwen3.5:9b"
 
 prometheus:
   base-url: http://host.docker.internal:9090
@@ -63,11 +63,11 @@ management:
       application: ${spring.application.name:oncall-agent}
 
 cls:
-  mock-enabled: true
+  mock-enabled: false
   secret-id: ${TENCENT_CLS_SECRET_ID:}
   secret-key: ${TENCENT_CLS_SECRET_KEY:}
-  region: ap-guangzhou
-  topic-id: ${TENCENT_CLS_TOPIC_ID:}
+  region: ap-chongqing
+  topic-id: f4b49851-84ce-4e43-9f3b-e5c34fafcdfd
 
 agent:
   python:

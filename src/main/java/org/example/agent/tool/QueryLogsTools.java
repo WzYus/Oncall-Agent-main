@@ -2,6 +2,12 @@ package org.example.agent.tool;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.tencentcloudapi.cls.v20201016.ClsClient;
+import com.tencentcloudapi.cls.v20201016.models.*;
+import com.tencentcloudapi.common.Credential;
+import com.tencentcloudapi.common.exception.TencentCloudSDKException;
+import com.tencentcloudapi.common.profile.ClientProfile;
+import com.tencentcloudapi.common.profile.HttpProfile;
 import lombok.Data;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -10,143 +16,119 @@ import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import jakarta.annotation.PostConstruct;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 /**
  * 日志查询工具
  * 用于查询 CLS（云日志服务）的日志信息
- * 支持 Mock 模式，提供与告警关联的模拟日志数据
+ * 支持 Mock 模式和真实 CLS API 调用
  */
 @Component
 public class QueryLogsTools {
 
     private static final Logger logger = LoggerFactory.getLogger(QueryLogsTools.class);
-    
-    /** 工具名常量，用于动态构建提示词 */
+
     public static final String TOOL_QUERY_LOGS = "queryLogs";
     public static final String TOOL_GET_AVAILABLE_LOG_TOPICS = "getAvailableLogTopics";
-    
+
     private final ObjectMapper objectMapper = new ObjectMapper();
-    
+
     @Value("${cls.mock-enabled:false}")
     private boolean mockEnabled;
-    
+
+    @Value("${cls.secret-id:}")
+    private String secretId;
+
+    @Value("${cls.secret-key:}")
+    private String secretKey;
+
+    @Value("${cls.region:ap-guangzhou}")
+    private String region;
+
+    @Value("${cls.topic-id:}")
+    private String topicId;
+
+    private ClsClient clsClient;
+
     private static final DateTimeFormatter FORMATTER = DateTimeFormatter
             .ofPattern("yyyy-MM-dd HH:mm:ss")
             .withZone(ZoneId.of("Asia/Shanghai"));
-    
-    @jakarta.annotation.PostConstruct
+
+    @PostConstruct
     public void init() {
-        logger.info("✅ QueryLogsTools 初始化成功, Mock模式: {}", mockEnabled);
+        logger.info("✅ QueryLogsTools 初始化成功, Mock模式: {}, region: {}, topicId: {}",
+                mockEnabled, region, topicId);
+        if (!mockEnabled) {
+            Credential cred = new Credential(secretId, secretKey);
+            HttpProfile httpProfile = new HttpProfile();
+            httpProfile.setEndpoint("cls.tencentcloudapi.com");
+            ClientProfile clientProfile = new ClientProfile();
+            clientProfile.setHttpProfile(httpProfile);
+            clsClient = new ClsClient(cred, region, clientProfile);
+        }
     }
-    
+
     /**
-     * 获取可用的日志主题列表
-     * 用于查询前先了解有哪些日志主题可供查询
+     * 获取可用的日志主题列表（Mock 数据）
      */
     @Tool(description = "Get all available log topics and their descriptions. " +
             "Call this tool first before querying logs to understand what log topics are available. " +
             "Returns a list of log topics with their names, descriptions, and example queries.")
     public String getAvailableLogTopics() {
         logger.info("获取可用的日志主题列表");
-        
         try {
             List<LogTopicInfo> topics = new ArrayList<>();
-            
-            // 系统指标日志
+
             LogTopicInfo systemMetrics = new LogTopicInfo();
             systemMetrics.setTopicName("system-metrics");
             systemMetrics.setDescription("系统指标日志，包含 CPU、内存、磁盘使用率等系统资源监控数据");
-            systemMetrics.setExampleQueries(List.of(
-                    "cpu_usage:>80",
-                    "memory_usage:>85",
-                    "disk_usage:>90",
-                    "level:WARN AND service:payment-service"
-            ));
+            systemMetrics.setExampleQueries(List.of("cpu_usage:>80", "memory_usage:>85", "disk_usage:>90", "level:WARN AND service:payment-service"));
             systemMetrics.setRelatedAlerts(List.of("HighCPUUsage", "HighMemoryUsage", "HighDiskUsage"));
             topics.add(systemMetrics);
-            
-            // 应用日志
+
             LogTopicInfo applicationLogs = new LogTopicInfo();
             applicationLogs.setTopicName("application-logs");
             applicationLogs.setDescription("应用日志，包含应用程序的错误日志、警告日志、慢请求日志、下游依赖调用日志等");
-            applicationLogs.setExampleQueries(List.of(
-                    "level:ERROR",
-                    "level:FATAL",
-                    "http_status:500",
-                    "response_time:>3000",
-                    "slow",
-                    "downstream OR redis OR database OR mq"
-            ));
+            applicationLogs.setExampleQueries(List.of("level:ERROR", "level:FATAL", "http_status:500", "response_time:>3000", "slow", "downstream OR redis OR database OR mq"));
             applicationLogs.setRelatedAlerts(List.of("ServiceUnavailable", "SlowResponse", "HighMemoryUsage"));
             topics.add(applicationLogs);
-            
-            // 数据库慢查询日志
+
             LogTopicInfo dbSlowQuery = new LogTopicInfo();
             dbSlowQuery.setTopicName("database-slow-query");
             dbSlowQuery.setDescription("数据库慢查询日志，包含执行时间较长的 SQL 查询，可用于分析数据库性能问题");
-            dbSlowQuery.setExampleQueries(List.of(
-                    "query_time:>2",
-                    "table:orders",
-                    "query_type:SELECT",
-                    "*"  // 查询所有慢查询
-            ));
+            dbSlowQuery.setExampleQueries(List.of("query_time:>2", "table:orders", "query_type:SELECT", "*"));
             dbSlowQuery.setRelatedAlerts(List.of("SlowResponse", "ServiceUnavailable"));
             topics.add(dbSlowQuery);
-            
-            // 系统事件日志
+
             LogTopicInfo systemEvents = new LogTopicInfo();
             systemEvents.setTopicName("system-events");
             systemEvents.setDescription("系统事件日志，包含 Kubernetes Pod 重启、OOM Kill、容器崩溃等系统级事件");
-            systemEvents.setExampleQueries(List.of(
-                    "restart OR crash",
-                    "oom_kill",
-                    "event_type:PodRestart",
-                    "reason:OOMKilled"
-            ));
+            systemEvents.setExampleQueries(List.of("restart OR crash", "oom_kill", "event_type:PodRestart", "reason:OOMKilled"));
             systemEvents.setRelatedAlerts(List.of("ServiceUnavailable", "HighMemoryUsage"));
             topics.add(systemEvents);
-            
-            // 构建输出
+
             LogTopicsOutput output = new LogTopicsOutput();
             output.setSuccess(true);
             output.setTopics(topics);
             output.setAvailableRegions(List.of("ap-guangzhou", "ap-shanghai", "ap-beijing", "ap-chengdu"));
             output.setDefaultRegion("ap-guangzhou");
-
             output.setMessage(String.format("共有 %d 个可用的日志主题。建议使用默认地域 'ap-guangzhou' 或省略 region 参数", topics.size()));
-            
+
             return objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(output);
-            
         } catch (Exception e) {
             logger.error("获取日志主题列表失败", e);
             return "{\"success\":false,\"message\":\"获取日志主题列表失败: " + e.getMessage() + "\"}";
         }
     }
-    
-    /**
-     * 查询日志
-     * 从云日志服务查询指定条件的日志
-     * 
-     * @param region 地域，如 ap-guangzhou
-     * @param logTopic 日志主题，如 system-metrics, application-logs
-     * @param query 查询条件，如 level:ERROR OR cpu_usage:>80
-     * @param limit 返回的日志条数，默认20条
-     */
-    // 有效地域列表
-    private static final List<String> VALID_REGIONS = List.of(
-            "ap-guangzhou", "ap-shanghai", "ap-beijing", "ap-chengdu"
-    );
 
-    private static final String DEFAULT_REGION = "ap-guangzhou";
-    
+    /**
+     * 查询日志（支持真实 CLS）
+     */
     @Tool(description = "Query logs from Cloud Log Service (CLS). " +
             "Use this tool to search application logs, system metrics, and other log data. " +
             "IMPORTANT: Before calling this tool, you should call getAvailableLogTopics to understand what log topics are available. " +
@@ -159,47 +141,80 @@ public class QueryLogsTools {
             "query (optional, defaults to a curated search if empty), " +
             "limit (optional, default 20, max 100).")
     public String queryLogs(
-            @ToolParam(description = "地域，可选值: ap-guangzhou, ap-shanghai, ap-beijing, ap-chengdu。默认 ap-guangzhou") String region,
+            @ToolParam(description = "地域，可选值: ap-chongqing,ap-guangzhou, ap-shanghai, ap-beijing, ap-chengdu。默认 ap-guangzhou") String region,
             @ToolParam(description = "日志主题，如 system-metrics, application-logs, database-slow-query, system-events，也支持 CLS TopicId") String logTopic,
             @ToolParam(description = "查询条件，支持 Lucene 语法，如 level:ERROR OR cpu_usage:>80；为空时返回该主题近 5 条核心日志") String query,
             @ToolParam(description = "返回日志条数，默认20，最大100") Integer limit) {
-        
+
         int actualLimit = (limit == null || limit <= 0) ? 20 : Math.min(limit, 100);
-        
-        String safeQuery = query == null ? "" : query;
-        
+        String safeQuery = (query == null || query.isEmpty()) ? "*" : query;
+        String actualRegion = (region == null || region.isEmpty()) ? this.region : region;
+        String actualTopicId = resolveTopicId(logTopic);
 
         try {
             List<LogEntry> logEntries;
-            
             if (mockEnabled) {
-                // Mock 模式：返回与告警关联的模拟日志数据
-                logEntries = buildMockLogs(region, logTopic, safeQuery, actualLimit);
+                logEntries = buildMockLogs(actualRegion, logTopic, safeQuery, actualLimit);
                 logger.info("使用 Mock 数据，返回 {} 条日志", logEntries.size());
             } else {
-                // 真实模式：调用 CLS API（这里预留接口，后续实现）
-                return buildErrorResponse("CLS 真实查询尚未实现，请启用 mock 模式进行测试");
+                logEntries = queryRealCls(actualTopicId, safeQuery, actualLimit);
+                logger.info("CLS 真实查询完成，返回 {} 条日志", logEntries.size());
             }
-            
-            // 构建成功响应
+
             QueryLogsOutput output = new QueryLogsOutput();
-            output.setSuccess(!logEntries.isEmpty());
-            output.setRegion(region);
+            output.setSuccess(true);
+            output.setRegion(actualRegion);
             output.setLogTopic(logTopic);
-            output.setQuery(safeQuery.isBlank() ? "DEFAULT_QUERY" : safeQuery);
+            output.setQuery(safeQuery);
             output.setLogs(logEntries);
             output.setTotal(logEntries.size());
             output.setMessage(logEntries.isEmpty() ? "未找到匹配的日志" : String.format("成功查询到 %d 条日志", logEntries.size()));
-            
-            String jsonResult = objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(output);
-            logger.info("日志查询完成: 找到 {} 条日志", logEntries.size());
-            
-            return jsonResult;
-            
+
+            return objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(output);
         } catch (Exception e) {
             logger.error("查询日志失败", e);
             return buildErrorResponse("查询失败: " + e.getMessage());
         }
+    }
+
+    private String resolveTopicId(String logTopic) {
+        if (logTopic != null && logTopic.matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")) {
+            return logTopic;
+        }
+        return topicId;
+    }
+
+    private List<LogEntry> queryRealCls(String topicId, String query, int limit) throws TencentCloudSDKException {
+        SearchLogRequest req = new SearchLogRequest();
+        req.setTopicId(topicId);
+        req.setFrom(System.currentTimeMillis() - 3600 * 1000);
+        req.setTo(System.currentTimeMillis());
+        req.setQuery(query);
+        req.setSyntaxRule(1L);
+        req.setLimit((long) limit);
+        req.setUseNewAnalysis(true);
+
+        SearchLogResponse resp = clsClient.SearchLog(req);
+        List<LogEntry> entries = new ArrayList<>();
+        for (LogInfo logInfo : resp.getResults()) {
+            LogEntry entry = new LogEntry();
+            entry.setTimestamp(FORMATTER.format(Instant.ofEpochMilli(logInfo.getTime())));
+            try {
+                Map<String, Object> logData = objectMapper.readValue(logInfo.getLogJson(), Map.class);
+                entry.setLevel((String) logData.getOrDefault("level", "INFO"));
+                entry.setService((String) logData.getOrDefault("service", "unknown"));
+                entry.setInstance((String) logData.getOrDefault("instance", ""));
+                entry.setMessage((String) logData.getOrDefault("message", logInfo.getLogJson()));
+                Map<String, String> metrics = new HashMap<>();
+                logData.forEach((k, v) -> metrics.put(k, v.toString()));
+                entry.setMetrics(metrics);
+            } catch (Exception e) {
+                entry.setLevel("INFO");
+                entry.setMessage(logInfo.getLogJson());
+            }
+            entries.add(entry);
+        }
+        return entries;
     }
 
     /**
